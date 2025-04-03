@@ -5,6 +5,9 @@
 #include <ctime>
 #include <bits/stdc++.h>
 #include <fstream>
+#include <SDL_image.h>
+#include <SDL_mixer.h>
+#include <SDL_ttf.h>
 
 using namespace std;
 
@@ -25,18 +28,24 @@ public:
     int x, y;
     SDL_Rect rect;
     bool active;
+    SDL_Texture* texture;
 
-    Wall(int startX, int startY, bool isActive = true) {
-        x = startX;
-        y = startY;
-        active = isActive;
+    Wall(int startX, int startY, SDL_Texture* tex, bool isActive = true)
+        : x(startX), y(startY), active(isActive), texture(tex)
+    {
         rect = {x, y, TILE_SIZE, TILE_SIZE};
     }
 
     void render(SDL_Renderer* renderer) {
         if(active) {
-            SDL_SetRenderDrawColor(renderer, 150, 75, 0, 255); // Brown color
-            SDL_RenderFillRect(renderer, &rect);
+            if (texture) {
+                // Vẽ texture nếu có
+                SDL_RenderCopy(renderer, texture, NULL, &rect);
+            } else {
+                // Fallback: Vẽ màu nâu nếu không có texture
+                SDL_SetRenderDrawColor(renderer, 150, 75, 0, 255);
+                SDL_RenderFillRect(renderer, &rect);
+            }
         }
     }
 };
@@ -82,13 +91,15 @@ public:
     int dirX, dirY;
     SDL_Rect rect;
     vector<Bullet> bullets;
+    SDL_Texture* texture;
 
-    PlayerTank(int startX, int startY, int startDirX = 0, int startDirY = -1) {
+    PlayerTank(int startX, int startY, SDL_Texture* tankTexture, int startDirX = 0, int startDirY = -1) {
         x = startX;
         y = startY;
         rect = {x, y, TILE_SIZE, TILE_SIZE};
         dirX = startDirX;
         dirY = startDirY; // Default direction up
+        texture = tankTexture;
     }
 
     void move(int dx, int dy, const vector<Wall>& walls) {
@@ -126,8 +137,15 @@ public:
     }
 
     void render(SDL_Renderer* renderer) {
-        SDL_SetRenderDrawColor(renderer, 255, 255, 0, 255);
-        SDL_RenderFillRect(renderer, &rect);
+        if (texture) {
+            // Vẽ texture nếu có
+            SDL_RenderCopy(renderer, texture, NULL, &rect);
+        } else {
+            // Fallback: Vẽ màu vàng nếu không có texture
+            SDL_SetRenderDrawColor(renderer, 255, 255, 0, 255);
+            SDL_RenderFillRect(renderer, &rect);
+        }
+        // Vẽ đạn (giữ nguyên)
         for (auto &bullet : bullets) {
             bullet.render(renderer);
         }
@@ -231,9 +249,12 @@ public:
     PlayerTank player;
     int enemyNumber = 3;
     vector<EnemyTank> enemies;
+    SDL_Texture* wallTexture;
+    SDL_Texture* playerTexture;
+    Mix_Music* backgroundMusic;
 
     // Constructor
-    Game(): player(((MAP_WIDTH - 1) / 2) * TILE_SIZE, (MAP_HEIGHT - 2) * TILE_SIZE) {
+    Game(): player(((MAP_WIDTH - 1) / 2) * TILE_SIZE, (MAP_HEIGHT - 2) * TILE_SIZE, nullptr) {
         running = true;
         inMenu = true;
         gamePaused = false;
@@ -256,8 +277,39 @@ public:
             running = false;
         }
 
+        // Load texture sau khi có renderer
+        wallTexture = IMG_LoadTexture(renderer, "assets/wall.png");
+        playerTexture = IMG_LoadTexture(renderer, "assets/player_tank.png");
+
+        player.texture = playerTexture;
+        // Kiểm tra lỗi
+        if (!wallTexture || !playerTexture) {
+            std::cerr << "Warning: Failed to load textures! Using fallback colors.\n";
+        }
+
+        if (Mix_OpenAudio(44100, MIX_DEFAULT_FORMAT, 2, 2048) < 0) {
+            cerr << "SDL_mixer could not initialize! Error: " << Mix_GetError() << endl;
+            running = false;
+        }
+
+        backgroundMusic = Mix_LoadMUS("assets/background.mp3");
+            if (!backgroundMusic) {
+            cerr << "Failed to load background music! Error: " << Mix_GetError() << endl;
+        }
+
+        if (TTF_Init() == -1) {
+            cerr << "SDL_ttf could not initialize! Error: " << TTF_GetError() << endl;
+            running = false;
+        }
+
+        // Load font (thay đổi đường dẫn tới file font của bạn)
+        TTF_Font* font = TTF_OpenFont("assets/font.ttf", 24);
+            if (!font) {
+            cerr << "Failed to load font! Error: " << TTF_GetError() << endl;
+        }
+
+
         generateWalls();
-        player = PlayerTank(((MAP_WIDTH - 1) / 2) * TILE_SIZE, (MAP_HEIGHT - 2) * TILE_SIZE);
         spawnEnemies();
     }
 
@@ -424,7 +476,7 @@ public:
             loadFile.read(reinterpret_cast<char*>(&x), sizeof(x));
             loadFile.read(reinterpret_cast<char*>(&y), sizeof(y));
             loadFile.read(reinterpret_cast<char*>(&active), sizeof(active));
-            walls.push_back(Wall(x, y, active));
+            walls.emplace_back(x, y, wallTexture, active);
         }
 
         // Load enemies
@@ -469,8 +521,12 @@ public:
         player.bullets.clear();
 
         generateWalls();
-        player = PlayerTank(((MAP_WIDTH - 1) / 2) * TILE_SIZE, (MAP_HEIGHT - 2) * TILE_SIZE);
+        player = PlayerTank(((MAP_WIDTH - 1) / 2) * TILE_SIZE, (MAP_HEIGHT - 2) * TILE_SIZE, playerTexture);
         spawnEnemies();
+
+        if (backgroundMusic) {
+            Mix_PlayMusic(backgroundMusic, -1);  // -1 = lặp vô hạn
+        }
     }
 
     void render() {
@@ -499,10 +555,9 @@ public:
     }
 
     void generateWalls(){
-        for(int i = 3; i < MAP_HEIGHT - 3; i += 2){
-            for(int j = 3; j < MAP_WIDTH - 3; j += 2){
-                Wall w = Wall(j * TILE_SIZE, i * TILE_SIZE);
-                walls.push_back(w);
+            for(int i = 3; i < MAP_HEIGHT - 3; i += 2) {
+            for(int j = 3; j < MAP_WIDTH - 3; j += 2) {
+                walls.push_back(Wall(j * TILE_SIZE, i * TILE_SIZE, wallTexture, true));
             }
         }
     }
@@ -537,6 +592,11 @@ public:
                         break;
                     case SDLK_p: // Nhấn 'p' để pause game
                         gamePaused = !gamePaused;
+                        if (gamePaused) {
+                            Mix_PauseMusic();  // Tạm dừng nhạc
+                        } else {
+                            Mix_ResumeMusic();  // Tiếp tục nhạc
+                        }
                         break;
                     case SDLK_ESCAPE: // Nhấn ESC để vào menu
                         inMenu = true;
@@ -653,6 +713,12 @@ public:
     }
 
     ~Game() {
+        if (backgroundMusic) {
+            Mix_FreeMusic(backgroundMusic);  // Giải phóng nhạc
+        }
+        Mix_CloseAudio();
+        if (wallTexture) SDL_DestroyTexture(wallTexture);
+        if (playerTexture) SDL_DestroyTexture(playerTexture);
         SDL_DestroyRenderer(renderer);
         SDL_DestroyWindow(window);
         SDL_Quit();
@@ -667,4 +733,3 @@ int main(int argc, char* argv[]) {
     }
     return 0;
 }
-
